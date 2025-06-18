@@ -1,202 +1,277 @@
-//Libraries Included
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>     // POSIX API access (fork, execvp, chdir)
-#include <sys/wait.h>   // Wait for process termination
-#include <fcntl.h>      // File control options
-#include <errno.h>      // Error handling
-#include <time.h>       // Time functions
+// C Program to design a shell in Linux
+#include<stdio.h>
+#include<string.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<sys/types.h>
+#include<sys/wait.h>
+#include<readline/readline.h>
+#include<readline/history.h>
 
-#define MAX_COMMAND_LENGTH 1024
-#define MAX_ARGS 64
+#define MAXCOM 1000 // max number of letters to be supported
+#define MAXLIST 100 // max number of commands to be supported
 
-// Function to parse a command string into arguments
-void parse_command(char* command, char** args) {
-    char* token;
-    int i = 0;
+// Clearing the shell using escape sequences
+#define clear() printf("\033[H\033[J")
 
-    token = strtok(command, " \t\n");
-    while (token != NULL && i < MAX_ARGS - 1) {
-        args[i++] = token;
-        token = strtok(NULL, " \t\n");
-    }
-    args[i] = NULL;
+// Greeting shell during startup
+void init_shell()
+{
+    clear();
+    printf("\n\n\n\n******************"
+        "************************");
+    printf("\n\n\n\t****MY SHELL****");
+    printf("\n\n\t-USE AT YOUR OWN RISK-");
+    printf("\n\n\n\n*******************"
+        "***********************");
+    char* username = getenv("USER");
+    printf("\n\n\nUSER is: @%s", username);
+    printf("\n");
+    sleep(1);
+    clear();
 }
 
-// Function to execute a command
-void execute_command(char** args) {
-    pid_t pid = fork();     // Forking a child process
+// Function to take input
+int takeInput(char* str)
+{
+    char* buf;
+
+    buf = readline("\n>>> ");
+    if (strlen(buf) != 0) {
+        add_history(buf);
+        strcpy(str, buf);
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+// Function to print Current Directory.
+void printDir()
+{
+    char cwd[1024];
+    getcwd(cwd, sizeof(cwd));
+    printf("\nDir: %s", cwd);
+}
+
+// Function where the system command is executed
+void execArgs(char** parsed)
+{
+    // Forking a child
+    pid_t pid = fork(); 
 
     if (pid == -1) {
-        perror("fork");     // Error handling for fork failure
-        exit(EXIT_FAILURE);
-    }
-    else if (pid == 0) {    // Child process
-        execvp(args[0], args);   // Execute the command
-        perror("execvp");   // Error handling if execvp fails
-        exit(EXIT_FAILURE);
-    }
-    else {                  // Parent process
-        int status;
-        waitpid(pid, &status, 0);   // Wait for child process to finish
+        printf("\nFailed forking child..");
+        return;
+    } else if (pid == 0) {
+        if (execvp(parsed[0], parsed) < 0) {
+            printf("\nCould not execute command..");
+        }
+        exit(0);
+    } else {
+        // waiting for child to terminate
+        wait(NULL); 
+        return;
     }
 }
 
-// Function to display calendar
-void display_calendar(int month, int year) {
-    char command[1024];
-    
-    if (month < 1 || month > 12 || year < 1) {
-        fprintf(stderr, "Invalid month or year.\n");
+// Function where the piped system commands is executed
+void execArgsPiped(char** parsed, char** parsedpipe)
+{
+    // 0 is read end, 1 is write end
+    int pipefd[2]; 
+    pid_t p1, p2;
+
+    if (pipe(pipefd) < 0) {
+        printf("\nPipe could not be initialized");
+        return;
+    }
+    p1 = fork();
+    if (p1 < 0) {
+        printf("\nCould not fork");
         return;
     }
 
-    sprintf(command, "cal %d %d", month, year);
-    system(command);
-}
+    if (p1 == 0) {
+        // Child 1 executing..
+        // It only needs to write at the write end
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
 
-int main() {
-    char command[MAX_COMMAND_LENGTH];   // Buffer for user input command
-    char* args[MAX_ARGS];               // Array to store command arguments
+        if (execvp(parsed[0], parsed) < 0) {
+            printf("\nCould not execute command 1..");
+            exit(0);
+        }
+    } else {
+        // Parent executing
+        p2 = fork();
 
-    // Shell loop
-    while (1) {
-        printf("NeoShell> ");
-        fflush(stdout);         // Flush standard output
-
-        if (fgets(command, sizeof(command), stdin) == NULL) {   // Read user input
-            break;  // Exit loop on EOF (Ctrl+D)
+        if (p2 < 0) {
+            printf("\nCould not fork");
+            return;
         }
 
-        command[strcspn(command, "\n")] = '\0';
+        // Child 2 executing..
+        // It only needs to read at the read end
+        if (p2 == 0) {
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+            if (execvp(parsedpipe[0], parsedpipe) < 0) {
+                printf("\nCould not execute command 2..");
+                exit(0);
+            }
+        } else {
+            // parent executing, waiting for two children
+            wait(NULL);
+            wait(NULL);
+        }
+    }
+}
 
-        parse_command(command, args);   // Parse command into arguments
+// Help command builtin
+void openHelp()
+{
+    puts("\n***WELCOME TO MY SHELL HELP***"
+        "\nCopyright @ Suprotik Dey"
+        "\n-Use the shell at your own risk..."
+        "\nList of Commands supported:"
+        "\n>cd"
+        "\n>ls"
+        "\n>exit"
+        "\n>all other general commands available in UNIX shell"
+        "\n>pipe handling"
+        "\n>improper space handling");
 
-        if (args[0] != NULL) {
-            // Exit Command
-            if (strcmp(args[0], "exit") == 0) {
-                printf("Exiting shell.\n");
-                return 0;
-            }
-            // Change Directory Command
-            else if (strcmp(args[0], "cd") == 0) {
-                if (args[1] != NULL) {
-                    if (chdir(args[1]) != 0) {
-                        perror("cd");
-                    }
-                }
-                else {
-                    fprintf(stderr, "cd: missing argument\n");
-                }
-            }
-            // echo->say
-            else if (strcmp(args[0], "say") == 0) {
-                if (args[1] != NULL) {
-                    printf("%s\n", args[1]);
-                }
-                else {
-                    fprintf(stderr, "say: missing message\n");
-                }
-            }
-            // gedit->open
-            else if (strcmp(args[0], "open") == 0) {
-                if (args[1] != NULL) {
-                    FILE *file = fopen(args[1], "a");
-                    fclose(file);
-                    
-                    char command[1024];
-                    sprintf(command, "open %s &", args[1]);
-                    system(command);
-                }
-                else {
-                    fprintf(stderr, "open: missing filename\n");
-                }
-            }
-            // cat->display
-            else if (strcmp(args[0], "display") == 0) {
-                if (args[1] != NULL) {
-                    char command[1024];
-                    sprintf(command, "cat %s", args[1]);
-                    system(command);
-                }
-                else {
-                    fprintf(stderr, "display: missing filename\n");
-                }
-            }
-            // ./a.out->./show.out
-            else if (strcmp(args[0], "./show.out") == 0) {
-                execute_command(args);
-            }
-            // cal->calendar
-            else if (strcmp(args[0], "calendar") == 0) {
-                if (args[1] != NULL && args[2] != NULL) {
-                    int month = atoi(args[1]);
-                    int year = atoi(args[2]);
-                    display_calendar(month, year);
-                }
-                else if (args[1] != NULL) {
-                    int year = atoi(args[1]);
-                    if (year >= 1) {
-                        for (int month = 1; month <= 12; month++) {
-                            display_calendar(month, year);
-                        }
-                    }
-                    else {
-                        fprintf(stderr, "calendar: invalid year\n");
-                    }
-                }
-                else {
-                    fprintf(stderr, "calendar: missing arguments\n");
-                }
-            }
-            // Input and Output Redirection
-            else {
-                int redirect_input = 0, redirect_output = 0;    // Flags for input and output redirection
-                char* input_file = NULL;
-                char* output_file = NULL;
+    return;
+}
 
-                // Check for input and output redirection symbols
-                for (int i = 0; args[i] != NULL; i++) {
-                    if (strcmp(args[i], "<") == 0) {
-                        redirect_input = 1;    // Set flag for input redirection
-                        input_file = args[i + 1];   // Store input file name
-                        args[i] = NULL;     // Remove redirection symbol and file name from arguments
-                    }
-                    else if (strcmp(args[i], ">") == 0) {
-                        redirect_output = 1;   // Set flag for output redirection
-                        output_file = args[i + 1];  // Store output file name
-                        args[i] = NULL;     // Remove redirection symbol and file name from arguments
-                    }
-                }
+// Function to execute builtin commands
+int ownCmdHandler(char** parsed)
+{
+    int NoOfOwnCmds = 4, i, switchOwnArg = 0;
+    char* ListOfOwnCmds[NoOfOwnCmds];
+    char* username;
 
-                // Perform input redirection if requested
-                if (redirect_input) {
-                    int fd = open(input_file, O_RDONLY);   // Open input file for reading
-                    if (fd == -1) {
-                        perror("open");   // Error handling for file open failure
-                        continue;   // Continue to next iteration of the loop
-                    }
-                    dup2(fd, STDIN_FILENO);   // Redirect standard input to file descriptor
-                    close(fd);   // Close file descriptor
-                }
+    ListOfOwnCmds[0] = "exit";
+    ListOfOwnCmds[1] = "cd";
+    ListOfOwnCmds[2] = "help";
+    ListOfOwnCmds[3] = "hello";
 
-                // Perform output redirection if requested
-                if (redirect_output) {
-                    int fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);   // Open output file for writing (create if not exist, truncate if exists)
-                    if (fd == -1) {
-                        perror("open");   // Error handling for file open failure
-                        continue;   // Continue to next iteration of the loop
-                    }
-                    dup2(fd, STDOUT_FILENO);   // Redirect standard output to file descriptor
-                    close(fd);   // Close file descriptor
-                }
-
-                execute_command(args);   // Execute the command
-            }
+    for (i = 0; i < NoOfOwnCmds; i++) {
+        if (strcmp(parsed[0], ListOfOwnCmds[i]) == 0) {
+            switchOwnArg = i + 1;
+            break;
         }
     }
 
-    printf("Exiting shell.\n");
+    switch (switchOwnArg) {
+    case 1:
+        printf("\nGoodbye\n");
+        exit(0);
+    case 2:
+        chdir(parsed[1]);
+        return 1;
+    case 3:
+        openHelp();
+        return 1;
+    case 4:
+        username = getenv("USER");
+        printf("\nHello %s.\nMind that this is "
+            "not a place to play around."
+            "\nUse help to know more..\n",
+            username);
+        return 1;
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+// function for finding pipe
+int parsePipe(char* str, char** strpiped)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        strpiped[i] = strsep(&str, "|");
+        if (strpiped[i] == NULL)
+            break;
+    }
+
+    if (strpiped[1] == NULL)
+        return 0; // returns zero if no pipe is found.
+    else {
+        return 1;
+    }
+}
+
+// function for parsing command words
+void parseSpace(char* str, char** parsed)
+{
+    int i;
+
+    for (i = 0; i < MAXLIST; i++) {
+        parsed[i] = strsep(&str, " ");
+
+        if (parsed[i] == NULL)
+            break;
+        if (strlen(parsed[i]) == 0)
+            i--;
+    }
+}
+
+int processString(char* str, char** parsed, char** parsedpipe)
+{
+
+    char* strpiped[2];
+    int piped = 0;
+
+    piped = parsePipe(str, strpiped);
+
+    if (piped) {
+        parseSpace(strpiped[0], parsed);
+        parseSpace(strpiped[1], parsedpipe);
+
+    } else {
+
+        parseSpace(str, parsed);
+    }
+
+    if (ownCmdHandler(parsed))
+        return 0;
+    else
+        return 1 + piped;
+}
+
+int main()
+{
+    char inputString[MAXCOM], *parsedArgs[MAXLIST];
+    char* parsedArgsPiped[MAXLIST];
+    int execFlag = 0;
+    init_shell();
+
+    while (1) {
+        // print shell line
+        printDir();
+        // take input
+        if (takeInput(inputString))
+            continue;
+        // process
+        execFlag = processString(inputString,
+        parsedArgs, parsedArgsPiped);
+        // execflag returns zero if there is no command
+        // or it is a builtin command,
+        // 1 if it is a simple command
+        // 2 if it is including a pipe.
+
+        // execute
+        if (execFlag == 1)
+            execArgs(parsedArgs);
+
+        if (execFlag == 2)
+            execArgsPiped(parsedArgs, parsedArgsPiped);
+    }
     return 0;
 }
